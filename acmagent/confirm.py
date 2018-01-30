@@ -77,9 +77,9 @@ class ConfirmCertificate(object):
             raise acmagent.ACManagerException('An unknown error has occurred while requesting url:"{}"'.format(ConfirmCertificate.APPROVAL_FORM_URL))
 
         logger.info('Success! The certificate has been confirmed')
-        return True
+        return response
 
-    def _fetch_message(self, message_id):
+    def _fetch_message_html(self, message_id):
         type, response = self._mail.fetch(message_id,'(RFC822)')
         email_message = email.message_from_string(response[0][1])
         logger.debug('Opening email: {}'.format(email_message['subject']))
@@ -98,14 +98,31 @@ class ConfirmCertificate(object):
         try:
             logger.debug('Reading email: {} HTML body'.format(email_message['subject']))
             html = BeautifulSoup(email_body, "html.parser")
+        except Exception as e:
+            logger.exception('failed to parse message body to html')
+
+        return html
+
+    def _fetch_message(self, message_id):
+        html = self._fetch_message_html(message_id)
+        try:
             approval_url = html.body.find('a', attrs={'id': ConfirmCertificate.APPROVAL_URL_ID}).get('href')
             logger.debug('Found confirmation url: {}'.format(approval_url))
-            return self._call_confirm_url(approval_url)
+            confirm_response = self._call_confirm_url(approval_url)
         except AttributeError as e:
             logger.exception('Failed to parse email html')
             raise acmagent.EmailBodyConfirmLinkIsMissingException('Url with "id={}" is not found in the email'.format(ConfirmCertificate.APPROVAL_URL_ID))
 
+        fqdn = 'unable to find'
+        try:
+            fqdn = html.body.find('span', attrs={'id': 'fqdn'}).contents
+        except AttributeError as e:
+            logger.exception('Failed to find fqdn in email')
+
+        return ConfirmResponse(fqdn, confirm_response.status_code)
+
     def confirm_certificate(self, certificate_id):
+        responses = []
         try:
             self._mail.select(ConfirmCertificate.EMAIL_FOLDER)
             imap_search = ConfirmCertificate._search_query(certificate_id)
@@ -121,9 +138,11 @@ class ConfirmCertificate(object):
 
                 logger.debug('Found {} email(s)'.format(len(message_ids)))
                 for message_id in message_ids:
-                    success = self._fetch_message(message_id)
-                    if success:
-                        return True
+                    response = self._fetch_message(message_id)
+                    responses.append(response)
+                    logger.info(str(response))
+
+                return False if False in [x.success for x in responses] else True
             else:
                 logger.exception('Unknown error')
                 raise acmagent.ACManagerException('An unknown error has occurred while reading emails, state={}'.format(success))
@@ -136,3 +155,13 @@ class ConfirmCertificate(object):
     def __exit__(self, exc_type, exc_val, exc_tb):
         logger.info('Closing connection with {} server'.format(self._server))
         self._mail.close()
+
+
+class ConfirmResponse(object):
+    def __init__(self, fqdn, status):
+        self.fqdn = fqdn
+        self.status = status
+        self.success = status == 200
+
+    def __str__(self):
+        return 'fqdn: {}, status: {}, success: {}'.format(self.fqdn, self.status, self.success)

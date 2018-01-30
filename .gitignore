@@ -136,3 +136,5 @@ Network Trash Folder
 Temporary Items
 .apdisk
 
+tests/test_confirm_multiple.py
+
